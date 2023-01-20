@@ -2,7 +2,7 @@
 #include <vector>
 #include <stdio.h>
 
-class Observable;
+class Subject;
 
 class Observer
 {
@@ -10,13 +10,13 @@ class Observer
   virtual ~Observer();
   virtual void update() = 0;
 
-  void observe(Observable* s);
+  void observe(Subject* s);
 
  protected:
-  Observable* subject_;
+  Subject* subject_;
 };
 
-class Observable
+class Subject
 {
  public:
   void register_(Observer* x);
@@ -42,18 +42,18 @@ Observer::~Observer()
   subject_->unregister(this);
 }
 
-void Observer::observe(Observable* s)
+void Observer::observe(Subject* s)
 {
   s->register_(this);
   subject_ = s;
 }
 
-void Observable::register_(Observer* x)
+void Subject::register_(Observer* x)
 {
   observers_.push_back(x);
 }
 
-void Observable::unregister(Observer* x)
+void Subject::unregister(Observer* x)
 {
   std::vector<Observer*>::iterator it = std::find(observers_.begin(), observers_.end(), x);
   if (it != observers_.end())
@@ -76,7 +76,8 @@ class Foo : public Observer
 int main()
 {
   Foo* p = new Foo;
-  Observable subject;
+  Subject subject;
+  // The observer can directly call the interface to observe the subject
   p->observe(&subject);
   subject.notifyObservers();
   delete p;

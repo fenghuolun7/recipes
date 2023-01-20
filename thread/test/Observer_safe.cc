@@ -1,41 +1,43 @@
 #include <algorithm>
 #include <vector>
-#include <stdio.h>
-#include "../Mutex.h"
-#include <boost/enable_shared_from_this.hpp>
-#include <boost/shared_ptr.hpp>
-#include <boost/weak_ptr.hpp>
+#include <memory>
+#include <mutex>
+#include <thread>
+#include <iostream>
+#include <chrono>
 
-class Observable;
+class Subject;
 
-class Observer : public boost::enable_shared_from_this<Observer>
+class Observer : public std::enable_shared_from_this<Observer>
 {
- public:
+public:
   virtual ~Observer();
+  Observer() = default;
+  Observer(int id) : id(id) {}
   virtual void update() = 0;
 
-  void observe(Observable* s);
+  void observe(Subject *s);
+  int id;
 
- protected:
-  Observable* subject_;
+protected:
+  Subject *subject_;
 };
 
-class Observable
+class Subject
 {
- public:
-  void register_(boost::weak_ptr<Observer> x);
-  // void unregister(boost::weak_ptr<Observer> x);
+public:
+  void register_(std::shared_ptr<Observer> x);
+  void unregister(std::shared_ptr<Observer> x);
 
   void notifyObservers()
   {
-    muduo::MutexLockGuard lock(mutex_);
+    std::lock_guard<std::mutex> lk(mutex_);
     Iterator it = observers_.begin();
     while (it != observers_.end())
     {
-      boost::shared_ptr<Observer> obj(it->lock());
-      if (obj)
+      if (*it)
       {
-        obj->update();
+        (*it)->update();
         ++it;
       }
       else
@@ -46,52 +48,76 @@ class Observable
     }
   }
 
- private:
-  mutable muduo::MutexLock mutex_;
-  std::vector<boost::weak_ptr<Observer> > observers_;
-  typedef std::vector<boost::weak_ptr<Observer> >::iterator Iterator;
+private:
+  mutable std::mutex mutex_;
+  std::vector<std::shared_ptr<Observer>> observers_;
+  typedef std::vector<std::shared_ptr<Observer>>::iterator Iterator;
 };
 
 Observer::~Observer()
 {
-  // subject_->unregister(this);
+  subject_->unregister(shared_from_this());
 }
 
-void Observer::observe(Observable* s)
+void Observer::observe(Subject *s)
 {
   s->register_(shared_from_this());
   subject_ = s;
 }
 
-void Observable::register_(boost::weak_ptr<Observer> x)
+void Subject::register_(std::shared_ptr<Observer> x)
 {
+  // i guess here use_count is 3
   observers_.push_back(x);
 }
 
-//void Observable::unregister(boost::weak_ptr<Observer> x)
-//{
-//  Iterator it = std::find(observers_.begin(), observers_.end(), x);
-//  observers_.erase(it);
-//}
+void Subject::unregister(std::shared_ptr<Observer> x)
+{
+  for (auto it = observers_.begin(); it != observers_.end(); it++)
+  {
+    // ??? not so sure
+    if (*it == x)
+    {
+      printf("notifyObservers() erase\n");
+      it = observers_.erase(it);
+    }
+  }
+}
 
 // ---------------------
 
 class Foo : public Observer
 {
+public:
+  Foo(int id) : Observer(id) {}
+
   virtual void update()
   {
     printf("Foo::update() %p\n", this);
+    std::cout << "foo id is : " << id << std::endl;
   }
 };
 
-int main()
+void process(std::shared_ptr<Foo> sp, Subject &subject)
 {
-  Observable subject;
-  {
-    boost::shared_ptr<Foo> p(new Foo);
-    p->observe(&subject);
-    subject.notifyObservers();
-  }
-  subject.notifyObservers();
+  sp->observe(&subject);
+  // std::this_thread::sleep_for(std::chrono::seconds(5));
 }
 
+int main()
+{
+  Subject subject;
+
+  std::shared_ptr<Foo> p1(new Foo(1));
+  std::shared_ptr<Foo> p2(new Foo(2));
+
+  std::thread t1(process, p1, std::ref(subject));
+  t1.join();
+  // when it exit, I guess user_count is 2;
+  std::thread t2(process, p2, std::ref(subject));
+  t2.join();
+  subject.notifyObservers();
+
+  // process(p1, subject);
+  // process(p2, subject);
+}
