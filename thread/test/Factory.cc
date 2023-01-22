@@ -1,22 +1,22 @@
 #include <map>
-
-#include <boost/bind.hpp>
-#include <boost/enable_shared_from_this.hpp>
-#include <boost/shared_ptr.hpp>
-#include <boost/weak_ptr.hpp>
-
-#include "../Mutex.h"
-
 #include <assert.h>
 #include <stdio.h>
+#include <algorithm>
+#include <vector>
+#include <memory>
+#include <mutex>
+#include <thread>
+#include <iostream>
+#include <chrono>
+#include <functional>
 
 using std::string;
 
-class Stock : boost::noncopyable
+class Stock
 {
- public:
-  Stock(const string& name)
-    : name_(name)
+public:
+  Stock(const string &name)
+      : name_(name)
   {
     printf(" Stock[%p] %s\n", this, name_.c_str());
   }
@@ -26,176 +26,181 @@ class Stock : boost::noncopyable
     printf("~Stock[%p] %s\n", this, name_.c_str());
   }
 
-  const string& key() const { return name_; }
+  Stock(const Stock &) = delete;
 
- private:
+  const string &key() const { return name_; }
+
+private:
   string name_;
 };
 
 namespace version1
 {
 
-// questionable code
-class StockFactory : boost::noncopyable
-{
- public:
-
-  boost::shared_ptr<Stock> get(const string& key)
+  // questionable code
+  class StockFactory
   {
-    muduo::MutexLockGuard lock(mutex_);
-    boost::shared_ptr<Stock>& pStock = stocks_[key];
-    if (!pStock)
+  public:
+    StockFactory(const StockFactory &) = delete;
+    StockFactory() = default;
+
+    std::shared_ptr<Stock> get(const string &key)
     {
-      pStock.reset(new Stock(key));
+      std::lock_guard<std::mutex> lock(mutex_);
+      std::shared_ptr<Stock> pStock = stocks_[key];
+      if (!pStock)
+      {
+        pStock.reset(new Stock(key));
+      }
+      return pStock;
     }
-    return pStock;
-  }
 
-
- private:
-  mutable muduo::MutexLock mutex_;
-  std::map<string, boost::shared_ptr<Stock> > stocks_;
-};
+  private:
+    mutable std::mutex mutex_;
+    std::map<string, std::shared_ptr<Stock>> stocks_;
+  };
 
 }
 
 namespace version2
 {
 
-class StockFactory : boost::noncopyable
-{
- public:
-  boost::shared_ptr<Stock> get(const string& key)
+  class StockFactory
   {
-    boost::shared_ptr<Stock> pStock;
-    muduo::MutexLockGuard lock(mutex_);
-    boost::weak_ptr<Stock>& wkStock = stocks_[key];
-    pStock = wkStock.lock();
-    if (!pStock)
+  public:
+    StockFactory() = default;
+    StockFactory(const StockFactory &) = delete;
+    std::shared_ptr<Stock> get(const string &key)
     {
-      pStock.reset(new Stock(key));
-      wkStock = pStock;
+      std::shared_ptr<Stock> pStock;
+      std::lock_guard<std::mutex> lock(mutex_);
+      std::weak_ptr<Stock> &wkStock = stocks_[key];
+      pStock = wkStock.lock();
+      if (!pStock)
+      {
+        pStock.reset(new Stock(key));
+        wkStock = pStock;
+      }
+      return pStock;
     }
-    return pStock;
-  }
 
- private:
-  mutable muduo::MutexLock mutex_;
-  std::map<string, boost::weak_ptr<Stock> > stocks_;
-};
+  private:
+    mutable std::mutex mutex_;
+    std::map<string, std::weak_ptr<Stock>> stocks_;
+  };
 
 }
 
 namespace version3
 {
 
-class StockFactory : boost::noncopyable
-{
- public:
-
-  boost::shared_ptr<Stock> get(const string& key)
+  class StockFactory
   {
-    boost::shared_ptr<Stock> pStock;
-    muduo::MutexLockGuard lock(mutex_);
-    boost::weak_ptr<Stock>& wkStock = stocks_[key];
-    pStock = wkStock.lock();
-    if (!pStock)
+  public:
+    StockFactory() = default;
+    StockFactory(const StockFactory &) = delete;
+    std::shared_ptr<Stock> get(const string &key)
     {
-      pStock.reset(new Stock(key),
-                   boost::bind(&StockFactory::deleteStock, this, _1));
-      wkStock = pStock;
+      std::shared_ptr<Stock> pStock;
+      std::lock_guard<std::mutex> lock(mutex_);
+      std::weak_ptr<Stock> &wkStock = stocks_[key];
+      pStock = wkStock.lock();
+      if (!pStock)
+      {
+        pStock.reset(new Stock(key),
+                     std::bind(&StockFactory::deleteStock, this, std::ref(pStock)));
+        // here, add new created shared_ptr into map
+        wkStock = pStock;
+      }
+      return pStock;
     }
-    return pStock;
-  }
 
- private:
-
-  void deleteStock(Stock* stock)
-  {
-    printf("deleteStock[%p]\n", stock);
-    if (stock)
+  private:
+    void deleteStock(std::shared_ptr<Stock> &pstock)
     {
-      muduo::MutexLockGuard lock(mutex_);
-      stocks_.erase(stock->key());  // This is wrong, see removeStock below for correct implementation.
+      printf("deleteStock[%p]\n", pstock);
+      if (pstock)
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        stocks_.erase(pstock->key()); // This is wrong, see removeStock below for correct implementation.
+      }
+      delete pstock.get();
     }
-    delete stock;  // sorry, I lied
-  }
-  mutable muduo::MutexLock mutex_;
-  std::map<string, boost::weak_ptr<Stock> > stocks_;
-};
+    mutable std::mutex mutex_;
+    std::map<string, std::weak_ptr<Stock>> stocks_;
+  };
 
 }
 
 namespace version4
 {
 
-class StockFactory : public boost::enable_shared_from_this<StockFactory>,
-                     boost::noncopyable
-{
- public:
-
-  boost::shared_ptr<Stock> get(const string& key)
+  class StockFactory : public std::enable_shared_from_this<StockFactory>
   {
-    boost::shared_ptr<Stock> pStock;
-    muduo::MutexLockGuard lock(mutex_);
-    boost::weak_ptr<Stock>& wkStock = stocks_[key];
-    pStock = wkStock.lock();
-    if (!pStock)
+  public:
+    StockFactory(const StockFactory &) = delete;
+    std::shared_ptr<Stock> get(const string &key)
     {
-      pStock.reset(new Stock(key),
-                   boost::bind(&StockFactory::deleteStock,
+      std::shared_ptr<Stock> pStock;
+      std::lock_guard<std::mutex> lock(mutex_);
+      std::weak_ptr<Stock> &wkStock = stocks_[key];
+      pStock = wkStock.lock();
+      if (!pStock)
+      {
+        pStock.reset(new Stock(key),
+                     std::bind(&StockFactory::deleteStock,
                                shared_from_this(),
-                               _1));
-      wkStock = pStock;
+                               pStock.get()));
+        wkStock = pStock;
+      }
+      return pStock;
     }
-    return pStock;
-  }
 
- private:
-
-  void deleteStock(Stock* stock)
-  {
-    printf("deleteStock[%p]\n", stock);
-    if (stock)
+  private:
+    void deleteStock(Stock *stock)
     {
-      muduo::MutexLockGuard lock(mutex_);
-      stocks_.erase(stock->key());  // This is wrong, see removeStock below for correct implementation.
+      printf("deleteStock[%p]\n", stock);
+      if (stock)
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        stocks_.erase(stock->key()); // This is wrong, see removeStock below for correct implementation.
+      }
+      delete stock; // sorry, I lied
     }
-    delete stock;  // sorry, I lied
-  }
-  mutable muduo::MutexLock mutex_;
-  std::map<string, boost::weak_ptr<Stock> > stocks_;
-};
+    mutable std::mutex mutex_;
+    std::map<string, std::weak_ptr<Stock>> stocks_;
+  };
 
 }
 
-class StockFactory : public boost::enable_shared_from_this<StockFactory>,
-                     boost::noncopyable
+class StockFactory : public std::enable_shared_from_this<StockFactory>
 {
- public:
-  boost::shared_ptr<Stock> get(const string& key)
+public:
+  StockFactory() = default;
+  StockFactory(const StockFactory &) = delete;
+  std::shared_ptr<Stock> get(const string &key)
   {
-    boost::shared_ptr<Stock> pStock;
-    muduo::MutexLockGuard lock(mutex_);
-    boost::weak_ptr<Stock>& wkStock = stocks_[key];
+    std::shared_ptr<Stock> pStock;
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::weak_ptr<Stock> &wkStock = stocks_[key];
     pStock = wkStock.lock();
     if (!pStock)
     {
       pStock.reset(new Stock(key),
-                   boost::bind(&StockFactory::weakDeleteCallback,
-                               boost::weak_ptr<StockFactory>(shared_from_this()),
-                               _1));
+                   std::bind(&StockFactory::weakDeleteCallback,
+                             std::weak_ptr<StockFactory>(shared_from_this()),
+                             pStock.get()));
       wkStock = pStock;
     }
     return pStock;
   }
 
- private:
-  static void weakDeleteCallback(const boost::weak_ptr<StockFactory>& wkFactory,
-                                 Stock* stock)
+private:
+  static void weakDeleteCallback(const std::weak_ptr<StockFactory> &wkFactory,
+                                 Stock *stock)
   {
     printf("weakDeleteStock[%p]\n", stock);
-    boost::shared_ptr<StockFactory> factory(wkFactory.lock());
+    std::shared_ptr<StockFactory> factory(wkFactory.lock());
     if (factory)
     {
       factory->removeStock(stock);
@@ -204,14 +209,14 @@ class StockFactory : public boost::enable_shared_from_this<StockFactory>,
     {
       printf("factory died.\n");
     }
-    delete stock;  // sorry, I lied
+    delete stock; // sorry, I lied
   }
 
-  void removeStock(Stock* stock)
+  void removeStock(Stock *stock)
   {
     if (stock)
     {
-      muduo::MutexLockGuard lock(mutex_);
+      std::lock_guard<std::mutex> lock(mutex_);
       auto it = stocks_.find(stock->key());
       if (it != stocks_.end() && it->second.expired())
       {
@@ -220,17 +225,17 @@ class StockFactory : public boost::enable_shared_from_this<StockFactory>,
     }
   }
 
- private:
-  mutable muduo::MutexLock mutex_;
-  std::map<string, boost::weak_ptr<Stock> > stocks_;
+private:
+  mutable std::mutex mutex_;
+  std::map<string, std::weak_ptr<Stock>> stocks_;
 };
 
 void testLongLifeFactory()
 {
-  boost::shared_ptr<StockFactory> factory(new StockFactory);
+  std::shared_ptr<StockFactory> factory(new StockFactory());
   {
-    boost::shared_ptr<Stock> stock = factory->get("NYSE:IBM");
-    boost::shared_ptr<Stock> stock2 = factory->get("NYSE:IBM");
+    std::shared_ptr<Stock> stock = factory->get("NYSE:IBM");
+    std::shared_ptr<Stock> stock2 = factory->get("NYSE:IBM");
     assert(stock == stock2);
     // stock destructs here
   }
@@ -239,11 +244,11 @@ void testLongLifeFactory()
 
 void testShortLifeFactory()
 {
-  boost::shared_ptr<Stock> stock;
+  std::shared_ptr<Stock> stock;
   {
-    boost::shared_ptr<StockFactory> factory(new StockFactory);
+    std::shared_ptr<StockFactory> factory(new StockFactory());
     stock = factory->get("NYSE:IBM");
-    boost::shared_ptr<Stock> stock2 = factory->get("NYSE:IBM");
+    std::shared_ptr<Stock> stock2 = factory->get("NYSE:IBM");
     assert(stock == stock2);
     // factory destructs here
   }
@@ -252,32 +257,36 @@ void testShortLifeFactory()
 
 int main()
 {
-  version1::StockFactory sf1;
-  version2::StockFactory sf2;
+  // version1::StockFactory sf1;
+  // version2::StockFactory sf2;
   version3::StockFactory sf3;
-  boost::shared_ptr<version3::StockFactory> sf4(new version3::StockFactory);
-  boost::shared_ptr<StockFactory> sf5(new StockFactory);
+  // std::shared_ptr<version3::StockFactory> sf4(new version3::StockFactory);
+  // std::shared_ptr<StockFactory> sf5(new StockFactory);
 
   {
-  boost::shared_ptr<Stock> s1 = sf1.get("stock1");
+    std::shared_ptr<Stock> s1 = sf3.get("stock1");
+    std::shared_ptr<Stock> s2 = sf3.get("stock2");
+    std::shared_ptr<Stock> s3 = sf3.get("stock3");
+    std::shared_ptr<Stock> s4 = sf3.get("stock4");
+    std::shared_ptr<Stock> s5 = sf3.get("stock4");
   }
 
-  {
-  boost::shared_ptr<Stock> s2 = sf2.get("stock2");
-  }
+  // {
+  //   std::shared_ptr<Stock> s2 = sf2.get("stock2");
+  // }
 
-  {
-  boost::shared_ptr<Stock> s3 = sf3.get("stock3");
-  }
+  // {
+  //   std::shared_ptr<Stock> s3 = sf3.get("stock3");
+  // }
 
-  {
-  boost::shared_ptr<Stock> s4 = sf4->get("stock4");
-  }
+  // {
+  //   std::shared_ptr<Stock> s4 = sf4->get("stock4");
+  // }
 
-  {
-  boost::shared_ptr<Stock> s5 = sf5->get("stock5");
-  }
+  // {
+  //   std::shared_ptr<Stock> s5 = sf5->get("stock5");
+  // }
 
-  testLongLifeFactory();
-  testShortLifeFactory();
+  // testLongLifeFactory();
+  // testShortLifeFactory();
 }
