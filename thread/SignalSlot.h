@@ -19,11 +19,14 @@ namespace detail
 template<typename Callback>
 struct SlotImpl;
 
+// signal, kind of like object
 template<typename Callback>
 struct SignalImpl : boost::noncopyable
 {
+   
   typedef std::vector<boost::weak_ptr<SlotImpl<Callback> > > SlotList;
 
+  // ???
   SignalImpl()
     : slots_(new SlotList)
   {
@@ -62,9 +65,11 @@ struct SignalImpl : boost::noncopyable
   boost::shared_ptr<SlotList> slots_;
 };
 
+// kind of like observer
 template<typename Callback>
 struct SlotImpl : boost::noncopyable
 {
+  // i think data is the wrapper of function
   typedef SignalImpl<Callback> Data;
   SlotImpl(const boost::shared_ptr<Data>& data, Callback&& cb)
     : data_(data), cb_(cb), tie_(), tied_(false)
@@ -100,6 +105,7 @@ struct SlotImpl : boost::noncopyable
 /// returned Slot object (and its copies).
 typedef boost::shared_ptr<void> Slot;
 
+// kind of like object.
 template<typename Signature>
 class Signal;
 
